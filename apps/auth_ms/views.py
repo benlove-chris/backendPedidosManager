@@ -70,7 +70,15 @@ class AuthCallbackView(APIView):
 
         logger.info(f"Usuário autenticado e token salvo: {user_email}")
 
-        # Redireciona com flag para o frontend processar fila automaticamente
+        # Verifica se a requisição veio do app nativo
+        user_agent = request.META.get("HTTP_USER_AGENT", "")
+        is_native = "wv" in user_agent.lower() or request.GET.get("platform") == "android"
+        
+        if is_native:
+            # Redireciona para o deep link do app nativo
+            return redirect(f"com.gestorpedidos.app://callback?retornou_do_login=true")
+        
+        # Web normal
         return redirect(f"{settings.FRONTEND_URL}?retornou_do_login=true")
 
 
