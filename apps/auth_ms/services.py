@@ -202,3 +202,4 @@ def get_valid_token(request) -> str:
         save_token_to_db(user_email, token_data)
 
     return token_data["access_token"]
+

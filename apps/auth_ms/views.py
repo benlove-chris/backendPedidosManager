@@ -4,7 +4,7 @@ from django.conf import settings
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from .services import build_auth_url, exchange_code_for_token, get_ms_user_info, salvar_token
+from .services import build_auth_url, exchange_code_for_token, get_ms_user_info, save_token_to_db
 from core.exceptions import MicrosoftAuthError
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ class AuthCallbackView(APIView):
 
         if user_email:
             try:
-                salvar_token(
+                save_token_to_db(
                     email=user_email,
                     access_token=token_data["access_token"],
                     refresh_token=token_data.get("refresh_token", ""),
