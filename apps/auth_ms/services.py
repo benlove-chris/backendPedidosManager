@@ -1,20 +1,18 @@
 import requests
 import logging
-from datetime import timedelta
 from django.conf import settings
-from django.utils import timezone
 from core.exceptions import MicrosoftAuthError
 
 logger = logging.getLogger(__name__)
 
 AUTHORITY = f"https://login.microsoftonline.com/{settings.MS_TENANT}"
 SCOPES = ["User.Read", "Files.ReadWrite", "offline_access"]
+REDIRECT_URI = f"{settings.BACKEND_URL}/auth/callback/"
 
 
 # ─── OAuth2 ───────────────────────────────────────────────────────────────────
 
 def build_auth_url(redirect_uri: str) -> str:
-    """Monta a URL de autorização OAuth2 da Microsoft."""
     params = {
         "client_id": settings.MS_CLIENT_ID,
         "response_type": "code",
@@ -27,10 +25,6 @@ def build_auth_url(redirect_uri: str) -> str:
 
 
 def exchange_code_for_token(code: str, redirect_uri: str) -> dict:
-    """
-    Troca o authorization code por access_token + refresh_token.
-    Retorna o dict completo de tokens.
-    """
     url = f"{AUTHORITY}/oauth2/v2.0/token"
     payload = {
         "client_id": settings.MS_CLIENT_ID,
@@ -40,7 +34,6 @@ def exchange_code_for_token(code: str, redirect_uri: str) -> dict:
         "grant_type": "authorization_code",
         "scope": " ".join(SCOPES),
     }
-
     try:
         response = requests.post(url, data=payload, timeout=10)
         response.raise_for_status()
@@ -56,10 +49,6 @@ def exchange_code_for_token(code: str, redirect_uri: str) -> dict:
 
 
 def refresh_access_token(refresh_token: str, redirect_uri: str) -> dict:
-    """
-    Usa o refresh_token para obter um novo access_token.
-    Retorna o dict completo de tokens.
-    """
     url = f"{AUTHORITY}/oauth2/v2.0/token"
     payload = {
         "client_id": settings.MS_CLIENT_ID,
@@ -69,7 +58,6 @@ def refresh_access_token(refresh_token: str, redirect_uri: str) -> dict:
         "grant_type": "refresh_token",
         "scope": " ".join(SCOPES),
     }
-
     try:
         response = requests.post(url, data=payload, timeout=10)
         response.raise_for_status()
@@ -85,12 +73,10 @@ def refresh_access_token(refresh_token: str, redirect_uri: str) -> dict:
 
 
 def get_ms_user_info(access_token: str) -> dict:
-    """Retorna informações básicas do usuário autenticado."""
-    headers = {"Authorization": f"Bearer {access_token}"}
     try:
         response = requests.get(
             "https://graph.microsoft.com/v1.0/me",
-            headers=headers,
+            headers={"Authorization": f"Bearer {access_token}"},
             timeout=10,
         )
         response.raise_for_status()
@@ -99,107 +85,82 @@ def get_ms_user_info(access_token: str) -> dict:
         raise MicrosoftAuthError(f"Falha ao obter dados do usuário: {e}")
 
 
-# ─── Persistência de token no banco ──────────────────────────────────────────
+# ─── Token Utils ──────────────────────────────────────────────────────────────
 
-def save_token_to_db(user_email: str, token_data: dict) -> None:
-    """
-    Salva ou atualiza os tokens no banco de dados (MicrosoftToken).
-    Calcula expires_at com base em expires_in (segundos).
-    """
+def _token_valido(access_token: str) -> bool:
+    try:
+        r = requests.get(
+            "https://graph.microsoft.com/v1.0/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=5,
+        )
+        return r.status_code == 200
+    except requests.RequestException:
+        return False
+
+
+def salvar_token(email: str, access_token: str, refresh_token: str) -> None:
+    """Salva ou atualiza o token no banco."""
     from apps.pedidos.models import MicrosoftToken
 
-    expires_in = token_data.get("expires_in", 3600)
-    expires_at = timezone.now() + timedelta(seconds=int(expires_in) - 60)  # 60s de margem
-
     MicrosoftToken.objects.update_or_create(
-        user_email=user_email,
+        user_email=email,
         defaults={
-            "access_token": token_data["access_token"],
-            "refresh_token": token_data.get("refresh_token", ""),
-            "expires_at": expires_at,
-        },
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+        }
     )
-    logger.info(f"Token salvo no banco para {user_email}, expira em {expires_at:%H:%M:%S}.")
+    logger.info(f"Token salvo no banco para {email}")
 
 
 def get_valid_token(request) -> str:
     """
-    Retorna um access_token sempre válido.
-
-    Estratégia em camadas:
-    1. Busca o token no banco pelo email da sessão
-    2. Se não expirou, retorna direto (sem chamada de rede extra)
-    3. Se expirou, renova via refresh_token automaticamente
-    4. Salva o novo token no banco e na sessão
-    5. Nunca exige novo login enquanto o refresh_token for válido
-       (refresh tokens da Microsoft duram até 90 dias com uso regular)
+    Retorna sempre um access_token válido.
+    1. Tenta o da sessão
+    2. Tenta o do banco
+    3. Renova via refresh_token
     """
     from apps.pedidos.models import MicrosoftToken
 
-    user_email = request.session.get("user_email")
-    redirect_uri = f"{settings.BACKEND_URL}/auth/callback/"
+    email = request.session.get("user_email")
 
-    # ── Tenta buscar do banco pelo email ──────────────────────────────────────
-    if user_email:
-        try:
-            record = MicrosoftToken.objects.get(user_email=user_email)
-
-            if not record.is_expired():
-                # Token ainda válido — retorna sem chamada de rede
-                logger.debug(f"Token do banco válido para {user_email}.")
-                return record.access_token
-
-            # Token expirado — renova via refresh_token do banco
-            if record.refresh_token:
-                logger.info(f"Token expirado para {user_email} — renovando via banco...")
-                token_data = refresh_access_token(record.refresh_token, redirect_uri)
-                save_token_to_db(user_email, token_data)
-                # Atualiza sessão também
-                request.session["access_token"] = token_data["access_token"]
-                if token_data.get("refresh_token"):
-                    request.session["refresh_token"] = token_data["refresh_token"]
-                request.session.modified = True
-                return token_data["access_token"]
-
-        except MicrosoftToken.DoesNotExist:
-            pass  # não tem no banco, tenta pela sessão
-
-    # ── Fallback: tenta pela sessão ───────────────────────────────────────────
+    # 1. Tenta token da sessão
     access_token = request.session.get("access_token")
-    refresh_token = request.session.get("refresh_token")
+    if access_token and _token_valido(access_token):
+        return access_token
 
-    if not access_token and not refresh_token:
-        raise MicrosoftAuthError("Sessão não encontrada. Faça login.")
+    # 2. Busca no banco pelo email
+    registro = None
+    if email:
+        registro = MicrosoftToken.objects.filter(user_email=email).first()
 
-    # Testa se o access_token da sessão ainda é válido
-    if access_token:
-        try:
-            test = requests.get(
-                "https://graph.microsoft.com/v1.0/me",
-                headers={"Authorization": f"Bearer {access_token}"},
-                timeout=5,
-            )
-            if test.status_code != 401:
-                return access_token
-        except requests.RequestException:
-            pass
+    if not registro:
+        raise MicrosoftAuthError("Sessão expirada. Faça login novamente.")
 
-    # Token da sessão expirado — renova via refresh_token da sessão
-    if not refresh_token:
-        raise MicrosoftAuthError("Token expirado. Faça login novamente.")
+    # 3. Testa o token salvo no banco
+    if _token_valido(registro.access_token):
+        request.session["access_token"] = registro.access_token
+        request.session["refresh_token"] = registro.refresh_token
+        request.session.modified = True
+        return registro.access_token
 
-    logger.info("Renovando token via refresh_token da sessão...")
-    token_data = refresh_access_token(refresh_token, redirect_uri)
+    # 4. Renova via refresh_token
+    try:
+        token_data = refresh_access_token(registro.refresh_token, REDIRECT_URI)
+        novo_access = token_data["access_token"]
+        novo_refresh = token_data.get("refresh_token", registro.refresh_token)
 
-    # Salva na sessão
-    request.session["access_token"] = token_data["access_token"]
-    if token_data.get("refresh_token"):
-        request.session["refresh_token"] = token_data["refresh_token"]
-    request.session.modified = True
+        request.session["access_token"] = novo_access
+        request.session["refresh_token"] = novo_refresh
+        request.session.modified = True
 
-    # Salva no banco se souber o email
-    if user_email:
-        save_token_to_db(user_email, token_data)
+        registro.access_token = novo_access
+        registro.refresh_token = novo_refresh
+        registro.save()
 
-    return token_data["access_token"]
+        logger.info(f"Token renovado automaticamente para {email}")
+        return novo_access
 
+    except Exception as e:
+        logger.error(f"Falha ao renovar token para {email}: {e}")
+        raise MicrosoftAuthError("Não foi possível renovar o token. Faça login novamente.")
