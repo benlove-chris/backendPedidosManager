@@ -10,9 +10,12 @@ SCOPES = ["User.Read", "Files.ReadWrite", "offline_access"]
 REDIRECT_URI = f"{settings.BACKEND_URL}/auth/callback/"
 
 
-# ─── OAuth2 ───────────────────────────────────────────────────────────────────
-
-def build_auth_url(redirect_uri: str) -> str:
+def build_auth_url(redirect_uri: str, platform: str = "") -> str:
+    """
+    Monta a URL de autorização OAuth2.
+    Se platform for informado, passa como state — retorna intacto no callback,
+    permitindo detectar se veio do app nativo mesmo após browser externo.
+    """
     params = {
         "client_id": settings.MS_CLIENT_ID,
         "response_type": "code",
@@ -20,6 +23,8 @@ def build_auth_url(redirect_uri: str) -> str:
         "response_mode": "query",
         "scope": " ".join(SCOPES),
     }
+    if platform:
+        params["state"] = platform
     query = "&".join(f"{k}={v}" for k, v in params.items())
     return f"{AUTHORITY}/oauth2/v2.0/authorize?{query}"
 
@@ -85,8 +90,6 @@ def get_ms_user_info(access_token: str) -> dict:
         raise MicrosoftAuthError(f"Falha ao obter dados do usuário: {e}")
 
 
-# ─── Token Utils ──────────────────────────────────────────────────────────────
-
 def _token_valido(access_token: str) -> bool:
     try:
         r = requests.get(
@@ -100,9 +103,7 @@ def _token_valido(access_token: str) -> bool:
 
 
 def salvar_token(email: str, access_token: str, refresh_token: str) -> None:
-    """Salva ou atualiza o token no banco."""
     from apps.pedidos.models import MicrosoftToken
-
     MicrosoftToken.objects.update_or_create(
         user_email=email,
         defaults={
@@ -114,22 +115,14 @@ def salvar_token(email: str, access_token: str, refresh_token: str) -> None:
 
 
 def get_valid_token(request) -> str:
-    """
-    Retorna sempre um access_token válido.
-    1. Tenta o da sessão
-    2. Tenta o do banco
-    3. Renova via refresh_token
-    """
     from apps.pedidos.models import MicrosoftToken
 
     email = request.session.get("user_email")
 
-    # 1. Tenta token da sessão
     access_token = request.session.get("access_token")
     if access_token and _token_valido(access_token):
         return access_token
 
-    # 2. Busca no banco pelo email
     registro = None
     if email:
         registro = MicrosoftToken.objects.filter(user_email=email).first()
@@ -137,14 +130,12 @@ def get_valid_token(request) -> str:
     if not registro:
         raise MicrosoftAuthError("Sessão expirada. Faça login novamente.")
 
-    # 3. Testa o token salvo no banco
     if _token_valido(registro.access_token):
         request.session["access_token"] = registro.access_token
         request.session["refresh_token"] = registro.refresh_token
         request.session.modified = True
         return registro.access_token
 
-    # 4. Renova via refresh_token
     try:
         token_data = refresh_access_token(registro.refresh_token, REDIRECT_URI)
         novo_access = token_data["access_token"]
