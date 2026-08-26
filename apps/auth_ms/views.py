@@ -6,10 +6,12 @@ from rest_framework.response import Response
 from rest_framework import status
 from .services import build_auth_url, exchange_code_for_token, get_ms_user_info, salvar_token
 from core.exceptions import MicrosoftAuthError
-
+from django.http import HttpResponseRedirect
 logger = logging.getLogger(__name__)
 REDIRECT_URI = f"{settings.BACKEND_URL}/auth/callback/"
 APP_SCHEME = "com.gestorpedidos.app"
+
+
 
 
 class LoginView(APIView):
@@ -79,7 +81,9 @@ class AuthCallbackView(APIView):
         if state == "android":
             # Deep link — abre o app nativo diretamente
             logger.info(f"Redirecionando para deep link: {APP_SCHEME}://callback")
-            return redirect(f"{APP_SCHEME}://callback?login=success&email={user_email}")
+            #return redirect(f"{APP_SCHEME}://callback?login=success&email={user_email}")
+            return HttpResponseRedirect(f"{APP_SCHEME}://callback?login=success&email={user_email}")
+
         else:
             # Web normal
             return redirect(f"{settings.FRONTEND_URL}?retornou_do_login=true")
