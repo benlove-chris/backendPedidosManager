@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from .services import build_auth_url, exchange_code_for_token, get_ms_user_info, salvar_token
 from core.exceptions import MicrosoftAuthError
-from django.http import HttpResponseRedirect
+from django.http import HttpResponse
 logger = logging.getLogger(__name__)
 REDIRECT_URI = f"{settings.BACKEND_URL}/auth/callback/"
 APP_SCHEME = "com.gestorpedidos.app"
@@ -77,17 +77,26 @@ class AuthCallbackView(APIView):
 
         logger.info(f"Usuário autenticado: {user_email} | platform state: '{state}'")
 
+        """
         # ── Redireciona baseado no state ──────────────────────────────────────
         if state == "android":
             # Deep link — abre o app nativo diretamente
             logger.info(f"Redirecionando para deep link: {APP_SCHEME}://callback")
             #return redirect(f"{APP_SCHEME}://callback?login=success&email={user_email}")
             return HttpResponseRedirect(f"{APP_SCHEME}://callback?login=success&email={user_email}")
-
+        
         else:
             # Web normal
             return redirect(f"{settings.FRONTEND_URL}?retornou_do_login=true")
-
+        """
+        if state == "android":
+            deep_link = f"{APP_SCHEME}://callback?login=success&email={user_email}"
+            logger.info(f"Redirecionando para deep link: {deep_link}")
+            response = HttpResponse(status=302)
+            response["Location"] = deep_link
+            return response
+        else:
+            return redirect(f"{settings.FRONTEND_URL}?retornou_do_login=true")
 
 class LogoutView(APIView):
     def post(self, request):
