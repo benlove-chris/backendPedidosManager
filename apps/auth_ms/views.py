@@ -118,3 +118,22 @@ class MeView(APIView):
                 "email": request.session.get("user_email"),
             }
         })
+
+class RestoreSessionView(APIView):
+    def get(self, request):
+        email = request.query_params.get("email", "")
+        if not email:
+            return Response({"success": False}, status=400)
+        
+        try:
+            from apps.pedidos.models import MicrosoftToken
+            token = MicrosoftToken.objects.get(user_email=email)
+            request.session["access_token"] = token.access_token
+            request.session["refresh_token"] = token.refresh_token
+            request.session["user_email"] = email
+            request.session.modified = True
+            return Response({"success": True})
+        except MicrosoftToken.DoesNotExist:
+            return Response({"success": False}, status=401)
+
+

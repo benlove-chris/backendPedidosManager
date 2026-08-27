@@ -5,6 +5,7 @@ EXEMPT_PATHS = [
     "/login/",
     "/auth/callback/",
     "/admin/",
+    "/api/auth/restore-session/",  # ← adicione
 ]
 
 
